@@ -1,36 +1,48 @@
-# dags/population_pipeline.py
+# dags/custom_population_pipeline.py
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from datetime import datetime, timedelta
 import pandas as pd
 import requests
 
-# URLs y paths
-DATA_URL = "https://raw.githubusercontent.com/datasets/population/master/data/population.csv"
-PROCESSED_PATH = "/tmp/processed_data.csv"
-REPORT_PATH = "/tmp/report.txt"
+# URLs y paths de los datos a descargar
+DATA_URL_1 = "https://raw.githubusercontent.com/datasets/population/master/data/population.csv"
+DATA_URL_2 = "https://raw.githubusercontent.com/datasets/gdp/master/data/gdp.csv"
+RAW_DATA_PATH_1 = "/tmp/raw_data_1.csv"
+RAW_DATA_PATH_2 = "/tmp/raw_data_2.csv"
+MERGED_DATA_PATH = "/tmp/merged_data.csv"
+REPORT_PATH = "/output/combined_report.txt" 
 
 # Funciones de procesamiento
-def download_data():
-    response = requests.get(DATA_URL)
-    with open("/tmp/raw_data.csv", "w") as f:
+def download_data_1():
+    response = requests.get(DATA_URL_1)
+    with open(RAW_DATA_PATH_1, "w") as f:
         f.write(response.text)
 
-def process_data():
-    df = pd.read_csv("/tmp/raw_data.csv")
-    # Obtener últimos datos disponibles por país
-    latest_data = df.sort_values('Year').groupby('Country Name').last()
-    # Top 5 países por población
-    top_5 = latest_data.sort_values('Value', ascending=False).head()
-    top_5.to_csv(PROCESSED_PATH)
+def download_data_2():
+    response = requests.get(DATA_URL_2)
+    with open(RAW_DATA_PATH_2, "w") as f:
+        f.write(response.text)
 
-def generate_report():
-    df = pd.read_csv(PROCESSED_PATH)
+def merge_data():
+    # Leer ambos archivos
+    df1 = pd.read_csv(RAW_DATA_PATH_1)
+    df2 = pd.read_csv(RAW_DATA_PATH_2)
+
+    # Hacer un merge de ambos archivos en función de los campos comunes (por ejemplo, 'Country Name' y 'Year')
+    merged_df = pd.merge(df1, df2, on=['Country Name', 'Year'], how='inner')
+    merged_df.to_csv(MERGED_DATA_PATH, index=False)
+
+def generate_combined_report():
+    df = pd.read_csv(MERGED_DATA_PATH)
+    # Filtrar o transformar datos según sea necesario; aquí se genera un informe simple
+    top_countries = df.groupby('Country Name')['Value_x'].max().sort_values(ascending=False).head(5)
+
     with open(REPORT_PATH, "w") as f:
-        f.write("Top 5 Países por Población\n")
-        f.write("=========================\n\n")
-        for _, row in df.iterrows():
-            f.write(f"{row['Country Name']}: {row['Value']:,.0f}\n")
+        f.write("Top 5 Países por Población Combinada\n")
+        f.write("==================================\n\n")
+        for country, population in top_countries.items():
+            f.write(f"{country}: {population:,.0f}\n")
 
 # Definición del DAG
 default_args = {
@@ -44,31 +56,36 @@ default_args = {
 }
 
 dag = DAG(
-    'population_analysis',
+    'custom_population_analysis',
     default_args=default_args,
-    description='Un simple pipeline de análisis de población',
+    description='Pipeline de análisis de población con descargas paralelas y merge',
     schedule_interval=timedelta(days=1),
 )
 
-# Tareas
+# Tareas del DAG
 t1 = PythonOperator(
-    task_id='download_data',
-    python_callable=download_data,
+    task_id='download_data_1',
+    python_callable=download_data_1,
     dag=dag,
 )
 
 t2 = PythonOperator(
-    task_id='process_data',
-    python_callable=process_data,
+    task_id='download_data_2',
+    python_callable=download_data_2,
     dag=dag,
 )
 
 t3 = PythonOperator(
-    task_id='generate_report',
-    python_callable=generate_report,
+    task_id='merge_data',
+    python_callable=merge_data,
+    dag=dag,
+)
+
+t4 = PythonOperator(
+    task_id='generate_combined_report',
+    python_callable=generate_combined_report,
     dag=dag,
 )
 
 # Definir dependencias
-t1 >> t2 >> t3
-
+[t1, t2] >> t3 >> t4
